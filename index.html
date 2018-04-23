@@ -1,0 +1,310 @@
+<html>
+<head>
+    <title>Airtable JSON WDC</title>
+    
+    <meta http-equiv="Cache-Control" content="no-store" />
+
+    <link href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.6/css/bootstrap.min.css" rel="stylesheet" crossorigin="anonymous">
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
+    <script src="https://connectors.tableau.com/libs/tableauwdc-2.1.latest.js" type="text/javascript"></script>
+    <script type="text/javascript">
+(function() {
+    		'use strict';
+
+    		$(document).ready(function () {
+
+    			//Gets the Application ID from the API schema.
+				function getAppIDFromSchema(vSchema)
+				{
+					if(vSchema.hasOwnProperty("id")){
+						return vSchema["id"];
+					}
+					else
+					{
+						return '';
+					}
+				}
+
+				//Get all the Tables from the Schema
+				function getTablesFromSchema(vSchema)
+				{
+					if(vSchema.hasOwnProperty("tables")){
+						return vSchema["tables"];
+					}
+					else
+					{
+						return '';
+					}
+				}
+
+				//Convert the Airtable Data Type to Tableau Data Type.
+				function getTableauDataType(pType)
+				{
+					if (pType == 'checkbox')
+					{
+						return tableau.dataTypeEnum.bool;
+					}
+					if (pType == 'date')
+					{
+						return tableau.dataTypeEnum.date;
+					}
+					if (pType == 'datetime')
+					{
+						return tableau.dataTypeEnum.datetime;
+					}
+
+					//Treat multiple data types as String
+					if (pType == 'foreignKey' || pType == 'multiSelect' || pType == 'multilineText' || pType == 'multipleAttachment' || pType == 'select' || pType == 'text')
+					{
+						return tableau.dataTypeEnum.string;
+					}
+					if (pType == 'number' || pType == 'rating')
+					{
+						return tableau.dataTypeEnum.float;
+					}
+				}
+
+				//This function does the AJAX call to the API. 
+				//This function is called recurssively if we find more offset.
+				//If no offset found, then perform the doneCallback.
+				function callAPIData(pURL, pBearer, table, pOffset, doneCallback)
+				{
+					
+					var vURL1 = pURL;
+					if (pOffset != 'first'){
+						vURL1 = pURL + '&offset=' + encodeURIComponent(pOffset);
+					}
+					$.ajax({
+			            url: vURL1,
+			            type: 'GET',
+			            dataType: 'json',
+			            headers: {
+			                'Authorization': pBearer
+			            },
+			            contentType: 'application/json; charset=utf-8',
+			            success: 
+			           function (cards) {
+
+			           	var rec_id = '', rec_fields = '', vFields = {}, tableData = [];
+			           	if(!cards.hasOwnProperty("records"))
+			           	{
+			           		return;
+			           	}
+				        for (var i1 = 0; i1 < cards.records.length; i1++) {
+				        	vFields = {};
+							vFields['ID'] = cards.records[i1].id || 'Unknown';
+							for (var j in cards.records[i1].fields)
+							{
+								//If the field is of type Array or another JSON object, then convert the field into a string.
+								//Else assign the field as it is.
+								if (( cards.records[i1].fields[j] instanceof Array) || (typeof cards.records[i1].fields[j] === "object") )
+								{
+									vFields[j] = JSON.stringify(cards.records[i1].fields[j]) || 'Unknown';
+								}
+								else
+								{
+									vFields[j] = cards.records[i1].fields[j] || 'Unknown';
+								}
+							}
+				            tableData.push(vFields);
+						}
+
+				        table.appendRows(tableData);
+
+				        //Recursively call self if we have the object "offset" in the result set.
+				        if(cards.hasOwnProperty("offset"))
+			           	{
+			           		console.log('Calling the callAPIData method because offset found ! ' + cards.offset);
+			           		callAPIData(pURL, pBearer, table, cards.offset, doneCallback);
+
+			           	}
+			           	else{
+			           		console.log('No more offset found ! ');
+			           		doneCallback();
+			           	}
+
+				    },
+			            error: function (error) {
+			            	console.log('Error while making the Airtable Call !');
+			            	return;
+			            }
+			        });
+				}
+
+			    $("#submitButton").click(function () {
+
+			    	//Get the API key from the Tableau Web Connector form.
+			        var api_key = $('#api_key').val().trim();
+
+			        //Get the schema copied from Schema Field .
+			        var schema  = JSON.parse($('#schema').val().trim());
+
+			        //Get the Application ID from the Schema
+		        	var app_id  = getAppIDFromSchema(schema);
+
+		        	//Get all tables from the Schema
+					var tables  = getTablesFromSchema(schema);
+					var vTables = [], vColumns = [];
+					var tab_id, tab_name, tab_url, i, j, col_id, col_name, col_type;
+
+
+			        if (!api_key || !app_id || !tables)
+			        {
+			        	$("textarea#logs").text(' API Key & Schema are required ! App ID  = ' + app_id);
+			        	return;
+			        }
+			        else
+			        {
+				    	for (i = 0; i < tables.length; i++) {
+			        		
+			        		tab_id = tables[i]["id"];
+			        		tab_name = tables[i]["name"];
+			        		tab_url = tables[i]["nameForUrl"];
+			        		vColumns = [];
+
+			        		for (j = 0; j < tables[i]["columns"].length; j++){
+			        			col_id = tables[i]["columns"][j]["id"];
+			        			col_name = tables[i]["columns"][j]["name"];
+			        			col_type = tables[i]["columns"][j]["type"];
+
+			        			vColumns[j] = {"id" : col_name, "alias" : col_name, "dataType" : col_type};
+			        		}
+			        		vColumns[vColumns.length] = {"id" : 'ID', "alias" : "ID", "dataType" : "text"};
+
+			        		vTables[i] = {id : tab_id, alias : tab_name, columns : vColumns, tabUrl : tab_url};
+			        	}
+
+			        	//tableau.connectionName = "AirTableau";
+			        	$("textarea#logs").text('Ready to submit ! \n');
+			        	
+			        	//Send the API Key, Tables, Application ID and the Offset with the value 'first' as Tableau Connection Data
+			        	tableau.connectionData = JSON.stringify({'api_key':api_key,'table_schema': vTables, 'app_id' : app_id, 'offset':'first'});
+			        	tableau.submit();
+			        }
+			    
+			    });
+
+			    var myConnector = tableau.makeConnector();
+
+				myConnector.init = function(initCallback) {
+			        tableau.connectionName = "AirTableau";
+				    initCallback();
+				};
+
+				myConnector.getSchema = function (schemaCallback) {
+
+				    //Get the Table definisions from the Schema passed.
+				    var tableauTables = JSON.parse(tableau.connectionData).table_schema;
+				    var tableauTables2 = [];
+				    
+				    for (var i = 0; i < tableauTables.length; i++){
+				    	for(var j =0; j < tableauTables[i].columns.length; j++){
+
+				    		//Conver the Airtable data type to Tableau Data Type for each field in the table.
+				    		tableauTables[i].columns[j].dataType = getTableauDataType(tableauTables[i].columns[j].dataType);
+				    	}
+
+				    	tableauTables2.push({id : tableauTables[i].id,
+				    	                     alias : tableauTables[i].alias,
+				    	                     columns : tableauTables[i].columns});
+				    }
+				    schemaCallback(tableauTables2);
+				};
+
+				myConnector.getData = function (table, doneCallback) {
+					
+
+		           	if( 1 == 1)
+		           	{
+						var api_key = JSON.parse(tableau.connectionData).api_key;
+						var app_id = JSON.parse(tableau.connectionData).app_id;
+						var table_schema = JSON.parse(tableau.connectionData).table_schema;
+
+						var i;
+						for (i = 0; i < table_schema.length; i++){
+							if(table.tableInfo.id == table_schema[i]["id"]){
+								var tableData = [];
+								var vURL = 'https://api.airtable.com/v0/' + app_id + '/' + encodeURIComponent(table_schema[i]["alias"])+'?pageSize=100';
+							    var vBearer = 'Bearer ' + api_key;
+
+							    var vOffset = 'first';
+
+							    callAPIData(vURL, vBearer, table, vOffset, doneCallback);
+							}
+						}
+		           	}
+
+				};
+
+			    tableau.registerConnector(myConnector);
+
+			});
+
+		})();
+	</script>
+	<style>
+		#background {
+		    position: fixed;
+		    top: 0;
+		    left: 0;
+		    width: 100%;
+		    height: 100%;
+		    background-image: url('airtable_wallpaper.png');
+		    background-repeat: no-repeat;
+		    background-position: center top;
+		    background-attachment: fixed;
+		    background-color: #cccccc;
+		    background-size: 100%;
+		    opacity: 0.25;
+		    filter:alpha(opacity=80);
+		}
+		a {
+		    color: #265380;
+		}
+		.center {
+			position: relative;
+		    color: #21140F;
+			text-align: center;
+			margin: auto;
+			margin-top: 50px;
+			width: 600px;
+		}
+	</style>
+</head>
+   
+<body>
+	<div id="background"></div>
+	<div class="center">
+		AirTableau - A Tableau Web Data Connector for Tableau (ver 10.1 or later) for <a href=https://airtable.com>Airtable</a> data.
+		<p>
+			Please use Tableau to connect to this URL.
+        </p>
+        <p class="signedin">Please enter your API Key and the Schema Details below</p>
+
+		<div id="div1">
+			<div id="gg1">API Key</div>
+			<input type="text" id="api_key" value=""><br>
+		</div>
+		
+		<div id="div2">
+			<div id="gg2">Schema</div>
+			<textarea rows="4" cols="75" id="schema">
+			</textarea>
+			<p class="signedin">Use the AirTableau Schema grabber Chrome extension from <a href=https://github.com/logicb/airtableau-chrome-extension target="_blank">here</a></p>
+			
+		</div>
+		
+		<br />
+		<p class="signedin">
+			<a href="#" class="btn btn-primary btn-block" id="submitButton"><span class="glyphicon glyphicon-arrow-down"></span> Connect to Airtable</a>
+		</p>
+
+        <br />
+
+        <div id="log_div">
+			<div id="gg3">Logs</div>
+			<textarea rows="1" cols="50" id="logs" readonly></textarea>
+		</div>
+	</div>
+</body>
+</html>
